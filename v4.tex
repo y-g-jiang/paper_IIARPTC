@@ -1,0 +1,958 @@
+% !TeX program = xelatex
+\documentclass[journal]{IEEEtran}
+\usepackage{iftex}
+\ifPDFTeX
+  \PackageError{main}{This document must be compiled with XeLaTeX}{Use xelatex main.tex or latexmk. pdfLaTeX cannot reliably load the Chinese fonts used here.}
+\fi
+\usepackage[UTF8,fontset=windows]{ctex}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{dblfloatfix}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{capt-of}
+\usepackage[absolute,overlay]{textpos}
+\usepackage{flafter}
+\usepackage{booktabs}
+\usepackage{array}
+ \usepackage[section]{placeins}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage{float}
+\usepackage{microtype}
+\raggedbottom
+\allowdisplaybreaks[2]
+\setlength{\emergencystretch}{2em}
+\setkeys{Gin}{width=\linewidth,height=0.78\textheight,keepaspectratio}
+\setcounter{topnumber}{4}
+\setcounter{dbltopnumber}{4}
+\renewcommand{\topfraction}{0.95}
+\renewcommand{\dbltopfraction}{0.95}
+\renewcommand{\textfraction}{0.05}
+\renewcommand{\floatpagefraction}{0.9}
+\renewcommand{\dblfloatpagefraction}{0.9}
+\setlength{\textfloatsep}{10pt plus 2pt minus 2pt}
+\setlength{\dbltextfloatsep}{10pt plus 2pt minus 2pt}
+\setlength{\headheight}{14pt}
+\setlength{\headsep}{12pt}
+
+\fancypagestyle{aphi}{
+  \fancyhf{}
+  \fancyhead[C]{\footnotesize ISP 仿射重量化对光子转移特性及感知质量的影响与抑制策略}
+  \fancyfoot[L]{\footnotesize \thepage}
+  \fancyfoot[C]{{\footnotesize \rmfamily APHI Magazine}}
+  \fancyfoot[R]{\footnotesize November 2025}
+  \renewcommand{\headrulewidth}{0.3pt}
+  \renewcommand{\footrulewidth}{0pt}
+}
+
+\title{ISP仿射重量化对光子转移特性及感知质量的影响与抑制策略}
+\author{姜尧耕（\url{https://y-g-jiang.github.io}）}
+
+\begin{document}
+\maketitle
+\pagestyle{aphi}
+\thispagestyle{aphi}
+\begin{center}
+Update: \url{https://github.com/y-g-jiang/paper_IIARPTC}
+
+DOI: \href{https://doi.org/10.5281/zenodo.18949317}{10.5281/zenodo.18949317}
+\end{center}
+
+\begin{abstract}
+本文面向消费级图像传感器在极低噪声条件下的解码与评测问题，系统研究了 ISP 仿射重量化、黑电平漂移与预缩放（prescaling）对光子转移曲线（PTC）、动态范围（DR）与暗部色偏的影响。文中建立了高斯输入下的精确量化模型，分析了非整数倍重量化引发的周期性噪声震荡与相位漂移，并提出“位深扩展--重对齐--逆归一化”的抑制策略。实验与仿真结果表明，该方法在不修改既有 ISP 固件的前提下，可显著改善极暗部线性度与感知色偏，并提升低噪时代测量结果的一致性与可解释性。
+\end{abstract}
+
+\begin{IEEEkeywords}
+ISP, 量化噪声, 黑电平漂移, 光子转移曲线, 动态范围, 色偏抑制
+\end{IEEEkeywords}
+
+
+\section{代序}
+
+
+本文是我在 25.7~25.11 的工作中一小部分的总结。
+
+这篇中我也会给出一些我这两周的新内容。快速过一遍我下面会提及的东西：
+
+1，黑电平以及prescaling的机制探索（上月内容）；2，黑电平矫正来改善暗部偏色办法的提出（上月内容）；3，仿射量化导致PTC弯曲以及相位移动的机理分析（本周的新内容）；4，极低噪声下量化网格精确对提升动态范围的意义（本周的新内容）；5，量化网格漂移量的感知结果（本周的新内容）。
+
+\section{引言}
+
+
+在现代ISP链路中，非线性量化调制例如对数曲线编码与 Gamma 校正因其对信号统计特性的显著改变而广受关注。工业界通常假设，只要排除了这些非线性模块，获取的数据即为“Linear Raw Data”。然而，这一假设往往与消费电子的事实相悖。大量被认为为“底层”或“Raw”的传感器输出数据，实际上在 ISP 前端经历了粗糙的仿射重量化处理。这种操作虽然维持了宏观的线性度，但其引入的量化网格相位失配以及PTC弯折、DR测量失准等问题却往往被忽略。
+
+这是因为在早期的消费级数字成像系统中，受限于较高的模拟读出噪声和暗电流，微观的量化调制伪影往往被掩盖。但多增益合成等新技术的引入带来的极低底噪和宽动态范围使得这些被掩盖的结构缺陷在测试以及实际使用中愈发显著。
+
+本文旨在填补消费级相机在极高信噪比时代的这一研究空白。通过建立数学模型并精确实验，我量化了消费级传感器的诸多过程对传感器光子转移曲线、色彩解码保真度以及最终感知质量的级联影响，并提出了意义重大的相应抑制策略。
+
+
+\section{标准解码框架与黑电平机制}
+
+
+\subsection{标准解码框架}
+
+
+\subsubsection{零点良好空间中的色彩空间变换}
+
+
+人对色彩解码的感知可以被拆解为如下三个步骤：1，物体光谱反射率与照明光源相乘，得到进入人眼睛的有效光谱；2，人眼用三个视锥的响应函数对光谱做内积。
+\[
+\mathbf{H} = \begin{bmatrix} L \\ M \\ S \end{bmatrix} = \int E(\lambda) \begin{bmatrix} l(\lambda) \\ m(\lambda) \\ s(\lambda) \end{bmatrix} d\lambda
+\]
+数码相机的色彩响应函数显然是与人类视觉系统响应函数往往不同的。
+\[
+\mathbf{C} = \begin{bmatrix} R_{cam} \\ G_{cam} \\ B_{cam} \end{bmatrix} = \int E(\lambda) \begin{bmatrix} r(\lambda) \\ g(\lambda) \\ b(\lambda) \end{bmatrix} d\lambda
+\]
+为了使得相机空间的色彩被转换到人的色彩空间中，我们希望使用 3*3 的一个线性变换矩阵把相机的三个基向人的三个基进行粗略变换。设矩阵 T 为从人眼 lms到相机 rgb 响应曲线的变换阵，对于一个 CIS 的 CMF近似人眼 CMF 的线性组合的情况，我们可以推出这种情况下的解码办法：
+\[
+\begin{bmatrix} r(\lambda) \\ g(\lambda) \\ b(\lambda) \end{bmatrix} = \mathbf{T}_{LMS\to cam} \cdot \begin{bmatrix} l(\lambda) \\ m(\lambda) \\ s(\lambda) \end{bmatrix}
+\]
+
+\[
+\mathbf{C} = \mathbf{T}_{LMS\to cam} \cdot \left( \int E(\lambda) \begin{bmatrix} l(\lambda) \\ m(\lambda) \\ s(\lambda) \end{bmatrix} d\lambda \right) = \mathbf{T}_{LMS\to cam} \cdot \mathbf{H}
+\]
+
+\[
+\mathbf{H} = \mathbf{T}_{cam\to LMS} \cdot \mathbf{C}
+= \mathbf{T}_{cam\to LMS}\cdot \begin{bmatrix} R_{cam} \\ G_{cam} \\ B_{cam} \end{bmatrix}
+\]
+
+
+在 DNG/Adobe 语境下，另引入 $\mathbf{T}^{(i)}_{XYZ\to cam}$ 表示标定光源 $i$ 下的 ColorMatrix，其逆矩阵记为 $\mathbf{T}^{(i)}_{cam\to XYZ}$。前者表示从 XYZ 空间到相机空间的映射，后者表示从相机空间到 XYZ 空间的映射。
+
+受限于尺寸对膜层数的限制以及成本、量子效率的取舍，一般CIS的CMF并不是人眼CMF的精确线性组合。因此CCM 仅能提供针对特定训练样本集的最小均方误差解，而非全光谱域的解析解。一般商业流程中需要更为细致的LUT操作。
+
+\subsubsection{白平衡解码}
+
+
+人类视觉系统会自然地使用一种色度适应机制来调整其对场景光源白点的感知，从而在变化的照明条件下实现色彩恒常性。
+
+以sRGB举例，他的白点被定义为CIE标准光源D65的色度坐标。也即当一个 sRGB 图像中的某个像素的 R、G、B 值相等且达到最大值时 (例如[255, 255, 255])，它在理想的 sRGB 显示设备上应该呈现出与标准 D65 日光（色温约为 6500K）下的一块完美白色反光板相同的颜色外观。因此为了匹配人眼的色彩恒常性，RAW在经过T变换后，我希望把现场白迁到D65。这一步变换我们称其为CAT。
+
+在数学上，最基础的色度适应模型是Von-Kries假说。该假说认为，色彩适应可以通过对人眼三种视锥细胞响应进行独立的对角增益调节来实现。然而，直接在 CIE XYZ 空间或标准的 LMS 空间中执行这种对角缩放，往往无法产生视觉上最准确的适应结果。
+
+为了解决这一问题，我们引入了Bradford变换。他可以通过寻找一个锐化的响应空间，使得在该空间内执行Von-Kries对角缩放能产生最低的感知误差。
+
+首先，利用Bradford矩阵$\mathbf{M}_{BFD}$将 CIE XYZ 值映射到锐化的 RGB/LMS 中间域：
+\[
+\begin{bmatrix} \rho \\ \gamma \\ \beta \end{bmatrix} = \mathbf{M}_{BFD} \cdot \begin{bmatrix} X \\ Y \\ Z \end{bmatrix}
+\]
+在该中间域内，利用源白点 $(X_S, Y_S, Z_S)$和目标白点$(X_D, Y_D, Z_D)$计算出的比例系数，构建对角矩阵$\mathbf{D}$进行白点对齐。
+\[
+\mathbf{D} = \begin{bmatrix} \rho_D/\rho_S & 0 & 0 \\ 0 & \gamma_D/\gamma_S & 0 \\ 0 & 0 & \beta_D/\beta_S \end{bmatrix}
+\]
+
+
+最后，通过逆矩阵 $\mathbf{M}_{BFD}^{-1}$将数据转换回标准的 CIE XYZ 空间。
+
+综合起来，这形成了一个完整的线性变换矩阵$\mathbf{M}_{CAT}$：
+\[
+\mathbf{M}_{CAT} = \mathbf{M}_{BFD}^{-1} \cdot \mathbf{D} \cdot \mathbf{M}_{BFD}
+\]
+
+\subsubsection{白平衡解码向对角的简化}
+
+
+近年来Adobe选择把CAT与色彩空间转换矩阵封装在一起成为ForwardMatrix。解码的时候默认以ForwardMatrix进行运算。
+\[
+\begin{aligned}
+\begin{bmatrix} R_L \\ G_L \\ B_L \end{bmatrix}_{D65}
+&= \underbrace{\left(\mathbf{M}_{sRGB}^{-1} \cdot \mathbf{CAT}_{AW \to D65} \cdot \mathbf{T}^{(i)}_{cam\to XYZ} \cdot \mathbf{D}_i^{-1}\right)}_{\text{ForwardMatrix}} \\
+&\quad \cdot \underbrace{\mathbf{D}}_{\text{WB}} \cdot \begin{bmatrix} \mathcal{R} \\ \mathcal{G} \\ \mathcal{B} \end{bmatrix}_{scene}
+\end{aligned}
+\]
+
+
+再对不同白点下的ForwardMatrix插值出最终使用的阵。 
+
+而类似dcraw的很多解码办法会选择在相机基下先对灰，再进行色彩空间变换。
+\[
+\begin{aligned}
+\begin{bmatrix} R_L \\ G_L \\ B_L \end{bmatrix}_{D65}
+&\approx \mathbf{M}_{sRGB}^{-1} \cdot \mathbf{T}^{(D65)}_{cam\to XYZ} \\
+&\quad \cdot \begin{bmatrix} \text{Gain}_R & 0 & 0 \\ 0 & \text{Gain}_G & 0 \\ 0 & 0 & \text{Gain}_B \end{bmatrix}
+\cdot \begin{bmatrix} \mathcal{R} \\ \mathcal{G} \\ \mathcal{B} \end{bmatrix}_{scene}
+\end{aligned}
+\]
+
+
+其中各颜色增益为D65下码值与AdoptedWhite码值之比。 
+
+\subsection{黑电平的意义及确定机制}
+
+
+为了使得色彩空间转换可以在一个零点良好的线性空间中进行，正确的处理流程必须首先在AFE或 ISP 预处理阶段构建一个能够容纳完整噪声统计分布的基座。基座的创建办法为连接一带偏置电阻的反相输入端，使放大器撬起输出的基准线。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226211348552.png}
+\caption{黑电平基座与钳位机制示意}
+\label{fig:blacklevel-base}
+\end{figure}
+
+
+针对光学黑电平的扣减，工业界常采用混合信号负反馈回路来实现：系统在模拟域实时采样 OB 像素的电压，将其与寄存器中预设的Clamp Target进行比较，计算出误差后控制数模转换器DAC产生一个模拟修正电压。这个电压被直接叠加在原始信号上，从而将信号的物理零点强行锚定在设定的基座之上。
+
+由于图像传感器的RN本质上服从以黑电平为均值的高斯分布，在极低照度下，部分像素的物理信号电平会因噪声波动而低于理论黑电平均值。若简单地将ADC的零输入参考电平与物理黑电平完全对齐，或者在数字域执行黑电平扣除时强制将负值截断，将导致噪声概率密度函数的左侧尾部被非物理地移除。这种零点截断会引入整流误差，迫使暗部信号的统计均值人为抬升，从而导致暗部线性度的丧失。
+
+近十年越来越多的相机可以通过 AFE 中的偏置 DAC，将光学黑像素的钳位目标值设定在稍高于 ADC 物理零点的位置。BL等于零的相机大部分未采取此办法。这一人为抬升的“模拟基座”为负向的噪声波动预留了足够的下溢空间。在随后的 ISP 链路中，系统允许产生并保留有符号的结果，或在更高位深的无符号空间中维持一个计算基座。在这样一个保留了负信号统计完整性的线性空间中，传感器才可以做到在高噪声下的解码插值及响应的完全线性，保证后续的正确处理。
+
+
+\section{极低噪下的量化噪声模型修正}
+
+
+这个偏置往往不是精确的——偏置不总可以精确地落在比零输入低给定的黑电平处（例如1008）。可能是1008.2，也可能是1008.7。由于他落在了1008和1009之间，解码时只能当作1008或者1009这样的整数来处理。这引入了很多问题。我在3-2中给出了一个改进的解码办法，3-1中我讨论这种偏离带来的噪声以及动态范围微弱差异。
+
+\subsection{平场中的噪声分析}
+
+
+\subsubsection{理论噪声模型}
+
+
+平场中的像素输出噪声可视作光子散粒噪声、暗电流噪声与读出噪声等若干独立随机过程的叠加。
+
+
+光子到达过程服从泊松分布。对于量子效率为 $\eta$ 的像素，在曝光时间 $T_{exp}$ 内收集的光电子数：
+
+\[
+N_{pe} \sim \text{Poisson}(\lambda), \quad \lambda = \frac{P \cdot T_{exp} \cdot \eta}{h\nu}
+\]
+在本文关心的工作条件下，光子散粒噪声可近似视为高斯分布。
+
+从物理上看，电子读出链中的热噪声来源于大量微观独立随机涨落的叠加，因此在宏观上通常可近似视为高斯随机过程。
+
+\subsubsection{综合噪声模型与实验验证}
+
+
+\paragraph{综合噪声模型}
+
+
+根据线性叠加原理，像素输出噪声为各独立分量的和： 
+
+\[
+ N_{total} = N_{shot} + N_{dark} + N_{read} 
+\]
+在上述近似下，总噪声服从： 
+
+\[
+ N_{total} \sim \mathcal{N}(\mu, \sigma_{total}^2) 
+\]
+其中： 
+
+\[
+\sigma_{total}^2 = \sigma_{shot}^2 + \sigma_{dark}^2 + \sigma_{read}^2
+\]
+
+\paragraph{实验验证}
+
+
+我使用远距离单灯（~10m），并给相机卡口覆盖一个均匀的帘幕，这种情况下我让相机连续拍摄两张，再使用JiangtherapeeOnline点对点进行差分，输出差分帧。在这种情况下，噪声功率是原先两倍。不应当在现在补偿倍数。在输出差分帧的时候补偿容易出现scaling导致的ptc弯曲，下文中我会详细建模。
+
+取二平场图像为例：图~\ref{fig:gauss-fit-low} 为 ILCE-7M3 在 6.46 码值处的红通道分布及其高斯拟合，拟合参数为 Mean=518.46、Sigma=1.65。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226212902612.png}
+\caption{ILCE-7M3 红通道平场分布及高斯拟合（6.46 码值）}
+\label{fig:gauss-fit-low}
+\end{figure}
+
+
+图~\ref{fig:gauss-fit-mid} 为 ILCE-7M3 在 17.12 码值处的红通道分布及其高斯拟合，拟合参数为 Mean=531.47、Sigma=2.03。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226212850792.png}
+\caption{ILCE-7M3 红通道平场分布及高斯拟合（17.12 码值）}
+\label{fig:gauss-fit-mid}
+\end{figure}
+
+
+图~\ref{fig:field-spectrum} 为在该码值下使用本文方法构建的平场能量谱（堆叠平均后）。
+
+低码值处例机的非线性降噪会让结果略微偏离高斯。但低码值平场的码值跨度较小，降噪在此码值范围内可近似视作线性。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226212835142.png}
+\caption{平场能量谱（堆叠平均）}
+\label{fig:field-spectrum}
+\end{figure}
+
+
+对于线性降噪，设原始噪声 $n(i,j) \sim \mathcal{N}(0, \sigma^2)$，滤波器核为 $h(k,l)$。
+
+输出噪声： 
+
+\[
+\tilde{n}(i,j) = (h * n)(i,j) = \sum_{k}\sum_{l} h(k,l) \cdot n(i-k, j-l)
+\]
+此时每个输出像素是有限个独立高斯变量的线性组合： 
+
+\[
+ \tilde{n} = \sum_{m=1}^{M} a_m \cdot X_m, \quad X_m \sim \mathcal{N}(0, \sigma^2) 
+\]
+根据高斯分布的线性不变性： 
+
+\[
+ \tilde{n} \sim \mathcal{N}\left(0, \sigma^2 \sum_{m} a_m^2\right) 
+\]
+在高码值处，PRNU等乘性噪声使得分布偏离高斯。但该时的噪声已经足够大至均匀假设也可完美适配模型，故不作分析。
+
+\subsection{高斯模型下的量化噪声}
+
+
+如上文所述。对信噪比的分析一般在平场中进行，而平场噪声是无数独立随机过程的总和，其分布是趋近于高斯分布的。
+
+常见情况下人们通常假设：信号跨越了大量的量化台阶且信号的变化相对于量化步长是随机且剧烈的。
+
+此时，量化误差 $e = Y - X$ 被假设为在区间 $[-0.5, 0.5]$ 上服从均匀分布。 对于均匀分布，其方差为： 
+
+\[
+ \sigma_q^2 = \int_{-0.5}^{0.5} x^2 dx = \left[ \frac{x^3}{3} \right]_{-0.5}^{0.5} = \frac{1}{12} 
+\]
+总方差通常被认为是输入噪声与量化噪声的平方和： 
+
+\[
+ \sigma_{total}^2 = \sigma^2 + \frac{1}{12} \implies \sigma_{total} = \sqrt{\sigma^2 + 0.0833} 
+\]
+但如果设模拟输入信号 $X$ 服从高斯分布 $X \sim \mathcal{N}(\mu, \sigma^2)$，其概率密度函数（PDF）为： 
+
+\[
+f_X(x) = \frac{1}{\sqrt{2\pi}\sigma} e^{-\frac{(x-\mu)^2}{2\sigma^2}}
+\]
+量化器 $Q(\cdot)$ 仍定义为具有单位步长 $\Delta=1$ 的四舍五入操作： 
+
+\[
+Y = Q(X) = \text{round}(X)
+\]
+输出 $Y$ 取整数 $k$ 的概率 $P_k$ 为输入 PDF 在量化区间 上的$(k-0.5, k+0.5]$积分： 
+
+\[
+\begin{aligned}
+P_k = P(Y=k)
+&= \int_{k-0.5}^{k+0.5} f_X(x) \, dx \\
+&= \Phi(a_k^{+}) - \Phi(a_k^{-})
+\end{aligned}
+\]
+其中
+\[
+a_k^{\pm} = \frac{k \pm 0.5 - \mu}{\sigma}.
+\]
+其中 $\Phi(\cdot)$ 为CDF。
+
+\[
+E[Y] = \sum_{k=-\infty}^{\infty} k \cdot P_k
+\]
+
+\[
+E[Y^2] = \sum_{k=-\infty}^{\infty} k^2 \cdot P_k
+\]
+
+\[
+\sigma_{out, exact}^2(\mu, \sigma) = E[Y^2] - (E[Y])^2
+\]
+图~\ref{fig:quant-noise-gaussian} 给出了输入标准差、完全对齐量化网格后的高斯分布标准差解析解、均匀分布假设解析解以及蒙特卡洛采样模拟点的对比。
+
+\begin{figure*}[htbp]
+\centering
+\includegraphics{image-20251226212800689.png}
+\caption{量化后高斯分布标准差的解析解与仿真对比}
+\label{fig:quant-noise-gaussian}
+\end{figure*}
+
+
+下表为我按照对数均匀撒点给出的。三列分别为输入噪声、贝奈特模型也就是均匀输入模型的噪声源以及我对高斯模型下的推导。对于输入噪声大于0.5LSB的时候，贝奈特模型就可以非常完美地拟合高斯模型了。
+
+\begin{table}[htbp]
+\centering
+\caption{数据表 1}
+\label{tab:data-1}
+\begin{tabular}{ccc}
+\toprule
+Input\_Sigma & Bennett\_Theory & Aligned\_Exact \\
+\midrule
+0.1000 & 0.3055 & 0.0008 \\
+0.1274 & 0.3155 & 0.0093 \\
+0.1624 & 0.3312 & 0.0456 \\
+0.2069 & 0.3552 & 0.1252 \\
+0.2637 & 0.3910 & 0.2407 \\
+0.3360 & 0.4430 & 0.3698 \\
+0.4281 & 0.5164 & 0.4942 \\
+0.5456 & 0.6172 & 0.6143 \\
+0.6952 & 0.7527 & 0.7526 \\
+0.8859 & 0.9317 & 0.9317 \\
+1.1288 & 1.1652 & 1.1652 \\
+1.4384 & 1.4671 & 1.4671 \\
+1.8330 & 1.8556 & 1.8556 \\
+2.3357 & 2.3535 & 2.3535 \\
+2.9764 & 2.9903 & 2.9903 \\
+3.7927 & 3.8037 & 3.8037 \\
+4.8329 & 4.8415 & 4.8415 \\
+6.1585 & 6.1652 & 6.1652 \\
+7.8476 & 7.8529 & 7.8529 \\
+10.0000 & 10.0042 & 10.0042 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\begin{table}[htbp]
+\centering
+\caption{数据表 2}
+\label{tab:data-2}
+\begin{tabular}{ccc}
+\toprule
+Input\_Sigma & Bennett\_Err & Aligned\_Err \\
+\midrule
+0.1000 & 0.2055 & -0.0992 \\
+0.1274 & 0.1881 & -0.1181 \\
+0.1624 & 0.1688 & -0.1168 \\
+0.2069 & 0.1483 & -0.0817 \\
+0.2637 & 0.1273 & -0.0230 \\
+0.3360 & 0.1070 & 0.0338 \\
+0.4281 & 0.0882 & 0.0661 \\
+0.5456 & 0.0717 & 0.0687 \\
+0.6952 & 0.0576 & 0.0575 \\
+0.8859 & 0.0458 & 0.0458 \\
+1.1288 & 0.0363 & 0.0363 \\
+1.4384 & 0.0287 & 0.0287 \\
+1.8330 & 0.0226 & 0.0226 \\
+2.3357 & 0.0178 & 0.0178 \\
+2.9764 & 0.0140 & 0.0140 \\
+3.7927 & 0.0110 & 0.0110 \\
+4.8329 & 0.0086 & 0.0086 \\
+6.1585 & 0.0068 & 0.0068 \\
+7.8476 & 0.0053 & 0.0053 \\
+10.0000 & 0.0042 & 0.0042 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{极低噪声下基座偏移的模型修正}
+
+
+此时我们加入对量化网格偏移的影响的讨论。
+
+在3-2章中我们有：
+\[
+f(x; \mu, \sigma) = \frac{1}{\sigma\sqrt{2\pi}} e^{-\frac{1}{2}\left(\frac{x-\mu}{\sigma}\right)^2}
+\]
+
+定义量化后的随机变量 $Y = Q(X) = \text{round}(X)$，其均值为：
+\[
+\mu_Y = E[Y] = \int_{-\infty}^{\infty} \text{round}(x)\, f(x; \mu, \sigma)\, dx
+\]
+最终带入方差定义式开方：
+\[
+\begin{aligned}
+\sigma_Y(\mu, \sigma)
+&= \sqrt{E[Y^2] - \mu_Y^2} \\
+&= \Bigg[ \int_{-\infty}^{\infty} \text{round}(x)^2 f(x; \mu, \sigma)\, dx \\
+&\quad - \left( \int_{-\infty}^{\infty} \text{round}(x) f(x; \mu, \sigma)\, dx \right)^2 \Bigg]^{1/2}
+\end{aligned}
+\]
+分别对不同均值的钟形曲线绘图：
+
+\begin{figure*}[htbp]
+\centering
+\includegraphics{image-20251226212947283.png}
+\caption{偏移量化网格下的输出标准差曲线（均值组一）}
+\label{fig:offset-curve-a}
+\end{figure*}
+
+
+\begin{figure*}[htbp]
+\centering
+\includegraphics{image-20251226213010681.png}
+\caption{偏移量化网格下的输出标准差曲线（均值组二）}
+\label{fig:offset-curve-b}
+\end{figure*}
+
+
+在图~\ref{fig:offset-curve-a} 与图~\ref{fig:offset-curve-b} 中可以得到印证：14bit 全幅条件下，当 RNDN>=0.5 时，普通 ff 的阴影点附近完全可以采用均匀分布假设来计算量化噪声并分析动态范围测试结果；当 RNDN<0.3 时，普通 ff 阴影点附近的量化噪声则会严重偏离均匀分布假设。
+
+目前14bit全幅RNDN最低的一批机器刚好在这个阈值附近。如果FFCmos进一步发展，CIS厂商就必须关注量化网格的差异导致的动态范围测量结果差异了。
+
+\subsection{高斯对均匀假设补偿干扰的PTC模拟}
+
+
+以ILCE-7M3为蓝本，我使用JiangtherapeeOnline模拟出了在类似CIS中进行低噪声合成（例如DGO）后的一些结果。
+
+对于给定的入射光强，我对上文的讨论简化得，对于FPN/PRNU不强的地方，传感器输出的数字信号的统计特性由光子散粒噪声、读出噪声以及量化噪声共同决定。总时间噪声在电子域的方差 $\sigma_{total\_e}^2$ 可表示为：
+\[
+\sigma_{total\_e}^2 = \sigma_{shot\_e}^2 + \sigma_{read\_e}^2
+\]
+
+其中，$\sigma_{shot\_e}^2$ 为光子散粒噪声方差，服从泊松分布特性，其值等于光电子产生的平均信号量 $\mu_e$；$\sigma_{read\_e}$ 为等效输入噪声。根据系统增益$K$，理想的无噪声数字信号与光电子数的关系为$\mu_e = S_{ideal} \cdot K$。
+
+我针对上述每个采样点，采用蒙特卡洛方法生成 $N=2000$ 个独立的像素样本以计算统计矩。模拟数据生成时先将目标净数字信号 $S_{net}$ 转换为平均光电子数 $\mu_e = S_{net} \cdot K$，再基于高斯近似，生成服从分布 $\mathcal{N}(\mu_e, \mu_e + \sigma_{read\_e}^2)$ 的随机样本序列，模拟光子到达与读出过程的随机涨落。然后将含噪电子信号转换回数字域并叠加黑电平偏置：$D_{raw} = (S_{electron} / K) + BL$。最终模拟ADC的离散化特性，对 $D_{raw}$ 执行四舍五入取整操作，并限制在 $[0, 2^{14}-1]$ 范围内。
+
+图~\ref{fig:ptc-gaussian} 汇总了三组模拟结果，每组左右两图。自上至下分别对应 RN=0.7、0.45、0.3 的模拟。左列给出三参数仅将 RN 代入均匀分布量化噪声假设时的 PTC 拟合，右列给出三参数直接模拟得到的 PTC 拟合结果。M.Tgt 紫色水平线为无 FPN 情况下 8mp 中 SNR=1 的 TgtSNR 线。
+
+\begin{figure*}[htbp]
+\centering
+\includegraphics{image-20251226212237068.png}
+\caption{三组读出噪声条件下的 PTC 拟合对比}
+\label{fig:ptc-gaussian}
+\end{figure*}
+
+
+近期索尼发布了一系列读出噪声接近 0.5LSB 的系统（例如 ILCE-7M5）。在其情形下，对应图~\ref{fig:ptc-gaussian} 第二行所示的模式。量化噪声的拟合还是相当精确的，对于 PTP DR 以及 8mp SNR=1 的 Landscape DR，在 PTC 正确以均匀分布量化假设补偿下的影响偏差在 0.01EV 以内。但注意图~\ref{fig:ptc-gaussian} 第三行的对比：在读出噪声（Measured）约为 0.4DN 的情况下，对于类似 ILCE-7M3 的模型，计算得的 DR 结果就会受量化网格相位影响较大，均匀量化模型也不再适用了。这也与前面的推论基本一致。
+
+
+\section{量化网格漂移致偏色及改进的解码办法}
+\enlargethispage{8\baselineskip}
+
+消费级图像传感器在极低照度下因上面描述的黑电平漂移和低位深量化会导致量化网格的错位误差。尽管该误差的绝对幅值极小（$|\delta| < 0.5 \text{ DN}$），但在执行白平衡等色彩解码时，由于 R、G、B 通道的增益系数 $g_c$ 往往差异显著（通常 $g_b > g_r > 1$），各通道残留的小数漂移被非一致性放大。在极低照度区域，这种被放大的差异性偏置破坏了 RGB 信号的辐射度比例，导致视觉上无法消除的底色污染。
+
+\begin{textblock*}{3.25in}(0.78in,5.55in)
+\centering
+\begingroup
+\setlength{\abovecaptionskip}{3pt}
+\setlength{\belowcaptionskip}{1pt}
+\includegraphics[width=0.88\linewidth]{image-20251226213044853.png}
+\captionof{figure}{OM-1 暗部偏色修正前后对比}
+\label{fig:decode-om1}
+
+\vspace{0.3\baselineskip}
+
+\includegraphics[width=0.88\linewidth]{image-20251226213059033.png}
+\captionof{figure}{G9 暗部偏色修正前后对比}
+\label{fig:decode-g9}
+\endgroup
+\end{textblock*}
+
+为此本文提出了一种“位深扩展-重对齐-逆归一化”的预处理策略。我通过注入精确的物理黑电平并模拟错误的量化基座，将原本发生在低位的非线性截断误差搬运至高位深空间中的可忽略区域，从而在最终输出中实现暗部线性度的物理保真。
+
+\refstepcounter{subsection}
+\noindent\textit{\Alph{subsection}.~漂移量的感知结果}\par
+\vspace{0.4ex}
+
+
+{\clubpenalty=0
+\widowpenalty=0
+\displaywidowpenalty=0
+\predisplaypenalty=0
+\postdisplaypenalty=0
+\brokenpenalty=0
+为评估量化网格漂移在 ISP 链路中的感知放大效应，我构建了一个前向逆向耦合的小信号色偏模型。令相机标定得到的 XYZ → Camera RGB 矩阵即为 ColorMatrix 为
+\[
+M_{\text{fwd}} \in \mathbb{R}^{3\times 3},
+\]
+
+则 Camera RGB → XYZ 的校色矩阵（CCM）为其逆
+\[
+M_{\text{ccm}} = M_{\text{fwd}}^{-1}.
+\]
+
+对于任意目标明度 $L^*\in[0.5,50]$，首先构造中性色
+\[
+\text{Lab}_{\text{ideal}}=(L^*,0,0),
+\]
+
+并通过 CIE D65 白点将其转换为 XYZ 三刺激值
+\[
+\text{XYZ}_{\text{ideal}} = \text{Lab}^{-1}_{\text{D65}}(L^*,0,0).
+\]
+
+继而利用 $M_{\text{fwd}}$ 完成「逆向编码」：
+\[
+\text{Cam}_{\text{lin}} = M_{\text{fwd}}\,\text{XYZ}_{\text{ideal}}, \qquad
+\text{Cam}_{\text{DN}} = \text{Cam}_{\text{lin}} \cdot (2^{14}-1),
+\]
+
+得到 14-bit 线性码值。此时按照黑电平真实漂移情况注入亚 LSB 级漂移
+\[
+\Delta \text{Cam}_{\text{DN}} \in \mathbb{R}^3,
+\]
+
+其分量可正可负，且按 2 的幂次提亮档位 $G=2^n$ 进行比例缩放：
+\[
+\text{Cam}_{\text{DN}}^{\prime} = \text{Cam}_{\text{DN}} + G \cdot \Delta\text{Cam}_{\text{DN}}.
+\]
+
+完成扰动后，执行向前解码：
+\[
+\text{Cam}_{\text{wb}} = \text{Cam}_{\text{DN}}^{\prime} \odot \mathbf{g}_{\text{wb}}
+\]
+\[
+\text{XYZ}_{\text{drift}} = M_{\text{ccm}}\left(\frac{\text{Cam}_{\text{wb}}}{2^{14}-1}\right),
+\]
+\[
+\text{Lab}_{\text{drift}} = \text{XYZ}^{-1}_{\text{D65}}(\text{XYZ}_{\text{drift}})
+\]
+最终感知误差由 CIEDE2000 度量：
+\[
+\Delta E_{00} = \Delta E_{00}\!\left(\text{Lab}_{\text{ideal}},\,\text{Lab}_{\text{drift}}\right).
+\]
+}
+
+通过在线性均匀采样的 $L^*$ 序列上重复上述流程，即可获得图~\ref{fig:color-drift-a} 与图~\ref{fig:color-drift-b} 所示的色偏衰减曲线。图中箭头高度直接对应 $\Delta E_{00}$，颜色则由提亮后偏色方向的 sRGB 坐标给出，从而在同一图表内同时承载误差大小与误差方向两种信息。
+
+
+\subsection{改进的解码办法}
+
+
+如图~\ref{fig:color-drift-a} 所示，OM-1 在提亮后有剧烈偏紫倾向。图~\ref{fig:decode-om1} 左图为奥林巴斯 OM-1 的 dpr ettl6 标版使用 Adobe Camera Raw 解码并提亮六档的结果，右图为经过本文算法处理后的解码结果。图~\ref{fig:decode-g9} 左图为 LUMIX G9 的 dpr iso200 light off 标版使用 Adobe Camera Raw 解码并提亮六档的结果，右图为经过本文算法处理后的解码结果。可见本文提出的解码办法可对现有解码管线下黑电平钳位不准导致的暗部失线性做到极佳的改善。
+
+\begin{figure*}[htbp]
+\centering
+\includegraphics{image-20251226212613788.png}
+\caption{色偏衰减曲线（情形一）}
+\label{fig:color-drift-a}
+\end{figure*}
+
+
+\begin{figure*}[htbp]
+\centering
+\includegraphics{image-20251226212656577.png}
+\caption{色偏衰减曲线（情形二）}
+\label{fig:color-drift-b}
+\end{figure*}
+
+
+定义以下变量：
+
+\begin{itemize}
+\item $x_{raw}$：传感器输出的原始 Raw 数据（整数）。
+\item $B_{wrong}$：ISP 管线默认使用的、可能存在漂移的黑电平。
+\item $B_{true}$：通过暗场校准测得的物理真值黑电平。
+\item $N_{in}$：输入数据的位深。
+\item $N_{target}$：处理过程中的高位深。
+\item $k_{gain}$：位深扩展系数，定义为 $k_{gain} = 2^{(N_{target} - N_{in})}$。
+
+\end{itemize}
+
+首先，我们在高精度域中，从原始观测值中扣除物理真值黑电平，得到真实的物理光子信号分量： 
+
+\[
+S_{true} = x_{raw} - B_{true}
+\]
+为了适配原有的整数解码管线（该管线通常假设输入为 $N_{in}$ 位深且黑电平为 $B_{wrong}$），我们将真实的物理信号放大到高位深域，并人为叠加原管线预期的黑电平基座。
+
+构建修正后的高位深数值 $Y_{high}$： 
+
+\[
+ Y_{high} = \text{round}\left( S_{true} \times k_{gain} + B_{wrong} \right)
+\]
+此时原本的暗部信号 $S_{true}$ 被放大了 $2^{N_{target}-N_{in}}$ 倍，原本的基座误差（$B_{wrong} - B_{true}$）相对于被放大后的信号而言，其权重被显著稀释。
+
+我将构建好的 $Y_{high}$ 输入到标准的转换流程中。
+
+在原有的错误管线中，解码输出 $Out_{orig}$ 为： 
+\[
+Out_{orig} = \text{Process}(x_{raw} - B_{wrong})
+\]
+由于 $B_{wrong} \neq B_{true}$，当 $x_{raw} \approx B_{true}$（极暗部）时，$(x_{raw} - B_{wrong})$ 会产生显著的相对误差，导致色偏。在使用本方法后，虽然管线依然执行减去 $B_{wrong}$ 的操作，但实际上它处理的是： 
+
+\[
+\text{Input}_{pipe} = Y_{high} \quad (\text{视为高位深数据})
+\]
+
+设量化残差为 $\varepsilon_q$，满足 $|\varepsilon_q| \le 0.5$，则有
+\[
+Y_{high} = (x_{raw} - B_{true}) \cdot k_{gain} + B_{wrong} + \varepsilon_q
+\]
+
+因此，管线执行的等效去黑操作为： 
+
+\[
+\text{Net}_{pipe} = Y_{high} - B_{wrong}
+= (x_{raw} - B_{true}) \cdot k_{gain} + \varepsilon_q
+\]
+最后进行解码，在线性色彩空间中除回原值。
+
+经过这一系列变换，原本由 $B_{wrong}$ 引入的固定偏置误差在最终输出图像中被等效为了一个极小量。其视觉影响等效于在原位深下、距离暗部 $(N_{target} - N_{in})$ 个档位处的偏色。
+
+例如，若从 8-bit 扩展到 16-bit ($k_{gain}=2^8=256$)，原先 1 DN 的黑电平漂移带来的色偏，现在被压缩到了 $1/256$ DN 的量级，在视觉上完全不可见。这实现了在不修改 ISP 固件代码的前提下，通过数据预处理彻底消除暗部基座色偏。此算法现在已完全落地(https://y-g-jiang.github.io/DCBL.html)。
+
+
+\section{Prescaling仿射重量化模型分析}
+
+\subsection{Prescaling的发现与建模}
+
+
+在25年7月，我在对商用图像传感器的 RAW 数据输出进行特性分析时，观测到了广泛存在于诸多图像传感器输出的码值断裂。基于下文中对其产生机理的溯源，我把它命名为“对角预调制”。因为他等效于一个对线性良好的数据一个乘减的操作，也即作用于与色彩空间转换同零点的线性空间中的对角阵。英文中我命名其为“wb prescaling”。因为在我于2-1-3章中给出的第二种以旋转矩阵规范色彩空间的流程中，白平衡矫正采取的也是一个对角阵。wb prescaling对数据的影响是类似白平衡预调制的。下文中我会对这种操作进行建模并讨论他对动态范围的影响。
+
+从图~\ref{fig:prescaling-d850-black} 与图~\ref{fig:prescaling-d850-clustering} 可以看出，D850 的黑位码值在 400 附近。使用 JiangtherapeeOnline，我给出了低于黑电平部分的直方图；其中低于黑位的部分也存在可见的断码。这表明其 ISP 采取了一种扣减黑位后乘倍率再加回的处理方式，其中扣减是不截零的。
+
+图~\ref{fig:prescaling-d850-clustering} 中可见码值粘连，也即并不是完全错开。这种情况往往来自四种原因：1，相位点插值；2，降噪；3，坏点补偿；4，降采样或压缩算法。D850 在 12800 ISO 下的直方图粘连来自第二种原因。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226213125357.png}
+\caption{D850 黑位附近的断码分布}
+\label{fig:prescaling-d850-black}
+\end{figure}
+
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226213640207.png}
+\caption{D850 高 ISO 下的码值粘连现象}
+\label{fig:prescaling-d850-clustering}
+\end{figure}
+
+
+使用JiangtherapeeOnline进行量化阶梯分析：
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226213206673.png}
+\caption{D850 的量化阶梯分析}
+\label{fig:prescaling-staircase}
+\end{figure}
+
+
+我们发现D850有着明确的六个码值一空的规律。
+
+为了保证线性性以及零点的正确性，这个ISP操作一定是乘减的。我可以下式构建：
+
+\[
+y = Q\!\bigl(k_{pre}\cdot(x-B)+B\bigr)
+= \mathrm{round}\!\bigl(k_{pre}\cdot(x-B)+B\bigr)
+\]
+式中 $x$ 为输入码值，$B$ 为黑电平，$k_{pre}$ 为 prescaling 的倍率。经上面测量不难发现，D850 的 prescaling 倍率约为 1.165。
+
+\subsection{Prescaling对PTC光子转移曲线的影响}
+
+
+\subsubsection{黑电平精确的情况下PTC的刻画}
+
+
+\paragraph{实验模拟}
+
+
+如3-4（高斯对均匀假设补偿干扰的PTC模拟）一章所讨论，在RNDN>0.5、Kadc正常时（也即绝大部分情况——我有理由相信当RNDN普遍小于0.5时厂商会选择更高位深的容器），我们可以放心来用对0.001以上码值的结果进行PTC拟合。
+
+同样设输入信号 $x$ 为服从泊松-高斯混合分布的连续随机变量，变换公式为：
+\[
+N=Q_{ADC}(X),\qquad Y=g(N)=Q_{pre}(kN)=\mathrm{round}(kN).
+\]
+其中 $k$ 为预缩放系数（例如上文中的典型值 1.165/1.167）。
+
+若从连续输入模型 $y=Q(kx)$ 观察，则每个输出整数 $m$ 对应的连续输入区间宽度恒为 $1/k$。真正导致 PTC 波纹的，并不是连续区间宽度随 $m$ 变化，而是第一次量化后得到的输入整数 $n$ 再经过 $m=Q(kn)$ 的离散重映射时，输出码占位呈现出非均匀、准周期性的跳码结构。不同于 Bennett 假设中的恒定量化噪声方差 $1/12$，此时有效量化误差方差会随信号均值而变化。
+
+图~\ref{fig:prescaling-ptc-compare} 左侧为蒙特卡洛模拟结果，右侧为我直接对 S5M2 的 PTC 测试 RAW 进行 DN 后乘减处理，再输入 JiangtherapeeOnline 后得到的输出结果。
+
+\begin{figure*}[htbp]
+\centering
+\includegraphics{image-20251226213223769.png}
+\caption{Prescaling 对 PTC 的模拟与实测对比}
+\label{fig:prescaling-ptc-compare}
+\end{figure*}
+
+
+\paragraph{数学模型}
+
+
+3-2章中，我已经给出了输出整数 $n$ 的概率 $P(n)$ 严格等于模拟信号落在量化区间 $(n-0.5, n+0.5]$ 内的概率积分：
+\[
+\begin{aligned}
+P_{in}(n) &= \int_{n-0.5}^{n+0.5} f_X(x) \, dx \\
+&= \Phi\left(\frac{n+0.5-\mu}{\sigma_{in}}\right) - \Phi\left(\frac{n-0.5-\mu}{\sigma_{in}}\right)
+\end{aligned}
+\]
+定义 $g(n)$为数字增益映射。在黑电平对齐且增益为 $k$ 的条件下可视作：
+\[
+m = g(n) = \text{round}(k \cdot n)
+\]
+该映射将输入整数空间 $\mathbb{Z}_{in}$ 映射到输出整数空间 $\mathbb{Z}_{out}$。由于 $k$ 为非整数（如 $1.165$），该映射不是保距映射，输出码占位会呈现非均匀、稀疏且带有准周期跳码的结构。
+\[
+E[Y] = \sum_{n=-\infty}^{\infty} \text{round}(k \cdot n) \cdot P_{in}(n)
+\]
+
+\[
+E[Y^2] = \sum_{n=-\infty}^{\infty} [\text{round}(k \cdot n)]^2 \cdot P_{in}(n)
+\]
+
+最终测量方差可写为
+\[
+\sigma_{\text{measured}}^{2} = E[Y^2] - E[Y]^2
+\]
+在 PTC 图表中，我们将 $\sigma_y$ 对 $\mu_y$ 作图。由于上述震荡项的存在，测量得到的噪声标准差将在理论值 $k\sigma_x$ 上下波动。
+对于 $k=1.165$，震荡的周期由 $k$ 的小数部分 $0.165 \approx 1/6$ 决定。这意味着大约每隔 6 个输入码值，量化误差的分布形态就会经历一个完整的“压缩-扩张”循环。PTC 曲线不再平滑，而是呈现出规律的波纹。即使黑电平完美对齐，这种由 $k$ 本身数学属性决定的震荡也是不可消除的固有特征。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226213324706.png}
+\caption{非整数倍 prescaling 下的理论 PTC 震荡}
+\label{fig:prescaling-ptc-theory}
+\end{figure}
+
+
+\paragraph{对DR测量的影响}
+
+
+prescaling最显著的影响是降低满阱容、增大噪声。对PTC模型而言他可以等效为一个在前方的乘子。
+\[
+\begin{aligned}
+\sigma_{out}^2 &= (k_{pre} \cdot \sigma_{raw})^2 \\
+&= k_{pre}^2 \left( K_{sys} \cdot \frac{\mu_{out}}{k_{pre}} + \sigma_{read}^2 \right) \\
+&= \underbrace{(k_{pre} \cdot K_{sys})}_{\mathrm{new\,Kadc}} \cdot \mu_{out} + (\underbrace{k_{pre} \cdot \sigma_{read}}_{\mathrm{new\,NoiseFloor}})^2
+\end{aligned}
+\]
+但因为这个震荡，在 TgtSNR=1 的测试中，若单纯只考虑对满阱容和读出噪声的干扰，并假设完全理想的采样，prescaling 只会影响约 0.22 档（虽然已经不少）；若考虑到这个震荡，实测的 DR 会比无 prescaling 情况下低 0.32 档。如果只对 R 和 B 通道采取这一操作，最后的平均 DR 会下降 0.16 档之多。图~\ref{fig:prescaling-ptc-with} 中黑色拟合线为理想采样下的 prescaling，图~\ref{fig:prescaling-ptc-without} 中黑色拟合线为无 prescaling 情况下的结果。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226213338027.png}
+\caption{理想采样下的 prescaling 对 PTC 的影响}
+\label{fig:prescaling-ptc-with}
+\end{figure}
+
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226213356748.png}
+\caption{无 prescaling 时的参考 PTC}
+\label{fig:prescaling-ptc-without}
+\end{figure}
+
+
+\subsubsection{黑电平漂移对非整数倍重量化的PTC的影响}
+
+
+\paragraph{数学模型模拟}
+
+
+考虑到即便我使用了手动定义的数字域的BL，解码结果仍然会有两族个截然不同的曲线，亦或者你的PTC结果与官方不符（具体为波动差一点相位）。那么可能出现的问题共被我归结为以下两点：
+
+1，解码时未恰当处理黑电平；
+
+2，乘减时取黑电平不同。
+
+对于第一点，它可以被简单归类为 PTC 曲线的水平移动。在对 ZF 的测量中我经常看到此情况。这导致 PTC 像被数族曲线拼贴起来一样，很好辨识。例如图~\ref{fig:blacklevel-shift} 中暗部不仅有湖蓝色与绿色重叠，还有一簇湖蓝位于绿色左侧。这是因为拍摄该簇时的图片黑电平均未被正确处理。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226213414986.png}
+\caption{黑电平处理不一致导致的 PTC 水平移动}
+\label{fig:blacklevel-shift}
+\end{figure}
+
+
+第二点则会导致震荡的相位移动。图~\ref{fig:phase-shift} 中红线与绿线是我模拟的按（等效）511 进行乘减与按 512 进行乘减的结果。尽管最后解码时我都按照统一的黑电平进行解码，一个不统一的乘减仍然会导致波动的相位移动，而这种相位移动会给 DR 测量带来极大的不确定性。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226213429812.png}
+\caption{乘减黑电平不同导致的 PTC 相位移动}
+\label{fig:phase-shift}
+\end{figure}
+
+
+注意图~\ref{fig:phase-shift} 中黑线为无 prescaling 下的理想最佳 PTC，并非“prescaling 后的理想采样”。
+
+\paragraph{对DR测量的影响}
+
+
+解码时取恰当黑电平是必须做的。你如果想测得准确的结果，起码应当统一拍摄PTC时尽可能少改变其他变量。使用JiangtherapeeOnline你们不难做到。
+
+但是第二点切实会带给DR测量管线一些影响了。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20251226213445834.png}
+\caption{不同乘减黑电平下的 DR 变化}
+\label{fig:dr-phase}
+\end{figure}
+
+
+不难发现，乘减时采取的黑电平可以遍历一切相位。在我以 S52 为例的模拟中，乘减时黑电平的更改会导致如图~\ref{fig:prescaling-ptc-with} 所示、超过 0.1 档 DR（8mp, SNR=1）的差异。这已经远高于 JiangtherapeeOnline 的测量流程精度对应的可忽略扰动；若对其他机型进一步模拟分析，差异或会更加显著。
+
+
+\section{z8的特殊情况}
+
+
+在近期我又发现了一个奇怪的现象：z8的PTC存在反曲情况。也即PTC线先降低再升高。
+
+经研究，我猜测其每个像素都会自动跳过1008附近的某个值。姑且不讨论他的原因，我来给出概括性建模。不妨假设是在数字化后进行的移位，那么有代表性的选项有两个：1，等效于将大于等于1008的码值+1；2，等效于将小于等于1008的码值全部-1。
+
+作为更复杂的情况，先对+1讨论。不过起码对z8而言是减法，后面有证明。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20260120055229974.png}
+\caption{z8 奇异码值映射情形一}
+\label{fig:z8-case-a}
+\end{figure}
+
+
+从图~\ref{fig:z8-case-a} 不难看出现在有两个问题：1，EDR 虚低；2，在 PDR 阴影点附近区段反而出现了 SNR 虚高的情况。
+
+这是因为在极暗部受此映射影响，直方图从中间直接裂开，导致方差虚高；而对于那些在直方图主要区域不在奇点附近的暗部，不受这个“分裂”影响的地方，PTC相当于直接右移了1ADU，这使得同DN处的噪声要低于原先的值。PTP的TgtSNR线对应的阴影点处的高斯，对现有机型来说，均不会受此分裂影响。因此这个映射降低了edr，却提升了pdr。
+
+最好的补偿办法是先拍摄暗场，将高于1008的码值左移来重新标定黑电平；再把这个黑电平+1，输入jiangtherapee。这样就可以获得极准确的PDR了。这个操作也等效于校正此映射后的暗部偏色。
+
+但z8并没有出现前文中我提及过的黑电平不够高导致的暗部偏品——甚至偏绿的。经过线性性分析可知z8的行为是更加近似等效于将小于等于1008的码值减一的。那么不难推得此时情形为PTC后段重合，前段虚高。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20260120055023982.png}
+\caption{z8 奇异码值映射情形二}
+\label{fig:z8-case-b}
+\end{figure}
+
+
+这足以描述z8的行为了——在prescaling的基础上，z8有此种操作，导致了PDR不受干扰的情况下，EDR测量结果严重偏低。反推z8的运算用EDR，可以反演raw到单峰形式。为了绝对严谨，请确保拼合后的直方图构成钟形曲线。经我的验证，贴合极度良好。
+
+\begin{figure}[htbp]
+\centering
+\includegraphics{image-20260120045712477.png}
+\caption{极低码值平场，非黑场。}
+\label{fig:low-code-hist}
+\end{figure}
+
+
+注意：当反推减法移位的动态时，黑电平应当保持不变来进行动态范围的计算。
+
+
+\section{附录}
+
+
+代码仓库：\href{https://github.com/y-g-jiang/IIARPTC}{y-g-jiang/IIARPTC}
+
+DOI：\href{https://doi.org/10.5281/zenodo.18949317}{10.5281/zenodo.18949317}
+
+后续本文更新信息见该仓库README。
+
+
+\section{参考文献}
+
+
+\begin{thebibliography}{99}
+
+\bibitem{Foi2008}
+M. Foi, M. Trimeche, V. Katkovnik, and K. Egiazarian,
+``Practical Poissonian-Gaussian Noise Modeling and Fitting for Single-Image Raw-Data,''
+\textit{IEEE Transactions on Image Processing},
+vol. 17, no. 10, pp. 1737--1754, 2008.
+
+\bibitem{Healey1994}
+G. Healey and R. Kondepudy,
+``Radiometric CCD Camera Calibration and Noise Estimation,''
+\textit{IEEE Transactions on Pattern Analysis and Machine Intelligence},
+vol. 16, no. 3, pp. 267--276, 1994.
+
+\bibitem{Janesick2007}
+J. R. Janesick,
+\textit{Photon Transfer}.
+SPIE Press, 2007.
+
+\bibitem{Johnson1928}
+J. B. Johnson,
+``Thermal Agitation of Electricity in Conductors,''
+\textit{Physical Review},
+vol. 32, no. 1, pp. 97--109, 1928.
+
+\bibitem{Nyquist1928}
+H. Nyquist,
+``Thermal Agitation of Electric Charge in Conductors,''
+\textit{Physical Review},
+vol. 32, no. 1, pp. 110--113, 1928.
+
+\end{thebibliography}
+\end{document}
